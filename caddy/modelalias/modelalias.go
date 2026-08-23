@@ -178,22 +178,31 @@ func (m *Middleware) inject(body []byte) ([]byte, bool) {
 	if json.Unmarshal(rawData, &items) != nil {
 		return nil, false
 	}
+
+	// root is the entry the alias stands for. Everything the alias reports —
+	// max_model_len above all — is inherited from it, so a client that sizes
+	// its context window off the model list gets the real number instead of a
+	// missing field.
+	var root json.RawMessage
 	for _, it := range items {
 		var probe struct {
 			ID string `json:"id"`
 		}
-		if json.Unmarshal(it, &probe) == nil && probe.ID == m.Alias {
+		if json.Unmarshal(it, &probe) != nil {
+			continue
+		}
+		if probe.ID == m.Alias {
 			return nil, false // already listed
 		}
+		if probe.ID == m.Target && root == nil {
+			root = it
+		}
+	}
+	if root == nil && len(items) > 0 {
+		root = items[0]
 	}
 
-	entry, err := json.Marshal(map[string]any{
-		"id":       m.Alias,
-		"object":   "model",
-		"created":  0,
-		"owned_by": "club3090-proxy",
-		"root":     m.Target,
-	})
+	entry, err := m.aliasEntry(root)
 	if err != nil {
 		return nil, false
 	}
@@ -207,6 +216,44 @@ func (m *Middleware) inject(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// aliasEntry clones the root model entry under the alias name. Cloning rather
+// than hand-building the object means every field the backend advertises —
+// max_model_len, permission, created, and whatever a future engine adds —
+// stays true for the alias without this code having to know about it.
+func (m *Middleware) aliasEntry(root json.RawMessage) (json.RawMessage, error) {
+	obj := map[string]json.RawMessage{}
+	if len(root) > 0 {
+		if json.Unmarshal(root, &obj) != nil {
+			obj = map[string]json.RawMessage{}
+		}
+	}
+	if len(obj) == 0 { // no usable root: fall back to a minimal entry
+		obj["object"] = json.RawMessage(`"model"`)
+		obj["created"] = json.RawMessage(`0`)
+	}
+
+	id, err := json.Marshal(m.Alias)
+	if err != nil {
+		return nil, err
+	}
+	obj["id"] = id
+
+	// Marks the entry as synthetic; nothing functional keys off owned_by.
+	obj["owned_by"] = json.RawMessage(`"club3090-proxy"`)
+
+	// vLLM's "root" is the model path, which the clone already carries. Only
+	// backends that omit it get the served name as a stand-in.
+	if _, ok := obj["root"]; !ok {
+		target, err := json.Marshal(m.Target)
+		if err != nil {
+			return nil, err
+		}
+		obj["root"] = target
+	}
+
+	return json.Marshal(obj)
 }
 
 func (m *Middleware) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
