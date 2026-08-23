@@ -1,5 +1,24 @@
-# The key lives here — never commit it.
+# The proxy key lives here — never commit it.
 .env
+.env.*
+!.env.example
 
 # Runtime state: which backend is pinned, last applied config.
 state/
+
+# Credentials. None of these are produced by this project; they are listed so
+# that a copy dropped in the working tree — a stray ~/.git-credentials, an SSH
+# key, a token dump — cannot be committed by a careless `git add -A`.
+.git-credentials
+.netrc
+.npmrc
+.npmrc.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*token*
+*secret*
