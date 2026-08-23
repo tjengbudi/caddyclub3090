@@ -1,0 +1,18 @@
+# Cold-start config. The router replaces this within a second of startup via
+# the admin API; it exists only so Caddy has something valid to boot with.
+{
+	admin 127.0.0.1:2019
+	auto_https off
+	order model_alias before reverse_proxy
+	log {
+		output stderr
+		level ERROR
+	}
+}
+
+:80 {
+	handle {
+		header Content-Type application/json
+		respond `{"error":{"message":"club3090 proxy is starting up","type":"service_unavailable","code":503}}` 503
+	}
+}

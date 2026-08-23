@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# llmroute — pick which club-3090 backend owns :80, and manage the API key.
+#
+#   llmroute                  route the only backend, or offer a menu
+#   llmroute 8020             pin by port
+#   llmroute vllm-...-dual    pin by container name
+#   llmroute status           show what is routed where
+#   llmroute key generate     create and install a random key
+#   llmroute key set <key>    install a specific key
+#   llmroute key show         print the current key
+#   llmroute key clear        remove the key (proxy becomes open)
+set -uo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/scripts/lib-discover.sh"
+
+ENVFILE="${ROOT}/.env"
+PINNED="${ROOT}/state/pinned"
+RECONCILE="${ROOT}/scripts/reconcile.sh"
+
+mkdir -p "${ROOT}/state"
+
+die() { echo "llmroute: $*" >&2; exit 1; }
+
+current_key() {
+	[[ -f "$ENVFILE" ]] || return 0
+	local k
+	k=$(sed -n 's/^[[:space:]]*PROXY_KEY[[:space:]]*=[[:space:]]*//p' "$ENVFILE" | tail -1)
+	k="${k%\"}"; k="${k#\"}"; k="${k%\'}"; k="${k#\'}"
+	printf '%s' "$k"
+}
+
+write_key() {
+	local key="$1" tmp
+	tmp=$(mktemp "${ROOT}/state/.env.XXXXXX")
+	if [[ -f "$ENVFILE" ]]; then
+		grep -v '^[[:space:]]*PROXY_KEY[[:space:]]*=' "$ENVFILE" >"$tmp"
+	fi
+	printf 'PROXY_KEY=%s\n' "$key" >>"$tmp"
+	mv "$tmp" "$ENVFILE"
+	chmod 600 "$ENVFILE"
+}
+
+apply() { bash "$RECONCILE"; }
+
+show_status() {
+	local key rows active
+	key=$(current_key)
+	[[ -f "$PINNED" ]] && active=$(<"$PINNED") || active=""
+	mapfile -t rows < <(discover)
+
+	if [[ -n "$key" ]]; then
+		echo "key      : required (${#key} chars) — send 'Authorization: Bearer …' or 'x-api-key: …'"
+	else
+		echo "key      : none — :80 is open to anyone who can reach it"
+	fi
+
+	if [[ ${#rows[@]} -eq 0 ]]; then
+		echo "backends : none running"
+		return
+	fi
+
+	echo "backends :"
+	local n p m u mark
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r n p m u <<<"$row"
+		mark="  "
+		[[ "$n" == "$active" ]] && mark="=>"
+		printf '  %s %-42s :%-5s %-30s %s\n' "$mark" "$n" "$p" "$m" "$u"
+	done
+	echo
+	echo "  '=>' owns http://localhost/  — the others stay reachable at http://localhost/b/<port>/"
+}
+
+pin_and_apply() {
+	printf '%s\n' "$1" >"$PINNED"
+	apply
+}
+
+choose() {
+	mapfile -t rows < <(discover)
+	case ${#rows[@]} in
+		0) die "no club-3090 backend is running" ;;
+		1)
+			IFS=$'\t' read -r n p m _ <<<"${rows[0]}"
+			pin_and_apply "$n"
+			echo "=> :80 => :${p}  ${n}  (${m})"
+			return
+			;;
+	esac
+
+	echo "${#rows[@]} backend aktif:"
+	local i=1 n p m u
+	for row in "${rows[@]}"; do
+		IFS=$'\t' read -r n p m u <<<"$row"
+		printf '  %d) %-42s :%-5s %-30s (%s)\n' "$i" "$n" "$p" "$m" "$u"
+		i=$((i + 1))
+	done
+
+	local pick
+	read -rp "Pilih [1-${#rows[@]}]: " pick
+	[[ "$pick" =~ ^[0-9]+$ ]] || die "not a number: ${pick}"
+	[[ "$pick" -ge 1 && "$pick" -le ${#rows[@]} ]] || die "out of range: ${pick}"
+
+	IFS=$'\t' read -r n p m _ <<<"${rows[$((pick - 1))]}"
+	pin_and_apply "$n"
+	echo "=> :80 => :${p}  ${n}  (${m})"
+}
+
+pin_by_key() {
+	local want="$1" n p m _
+	while IFS=$'\t' read -r n p m _; do
+		if [[ "$want" == "$n" || "$want" == "$p" ]]; then
+			pin_and_apply "$n"
+			echo "=> :80 => :${p}  ${n}  (${m})"
+			return 0
+		fi
+	done < <(discover)
+	die "no running backend matches '${want}' (try: llmroute status)"
+}
+
+case "${1:-}" in
+	"") choose ;;
+	status | --status | -s) show_status ;;
+	-h | --help | help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+	key)
+		case "${2:-}" in
+			show) k=$(current_key); [[ -n "$k" ]] && echo "$k" || echo "(none — proxy is open)" ;;
+			clear) write_key ""; apply; echo "key cleared — :80 is now open" ;;
+			set)
+				[[ -n "${3:-}" ]] || die "usage: llmroute key set <key>"
+				write_key "$3"; apply; echo "key installed"
+				;;
+			generate)
+				k="sk-c3-$(head -c 24 /dev/urandom | base64 | tr -d '=+/' | cut -c1-32)"
+				write_key "$k"; apply
+				echo "$k"
+				;;
+			*) die "usage: llmroute key {generate|set <key>|show|clear}" ;;
+		esac
+		;;
+	*) pin_by_key "$1" ;;
+esac

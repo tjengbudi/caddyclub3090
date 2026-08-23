@@ -1,0 +1,37 @@
+# Two host-network containers: Caddy on :80, and a watcher that keeps Caddy
+# pointed at whichever club-3090 engine is running.
+#
+# host network is deliberate: it lets Caddy bind :80 without sudo (the docker
+# daemon is already root) and reach the engines on 127.0.0.1:<port> directly.
+
+services:
+  caddy:
+    build: ./caddy
+    image: caddyclub3090-caddy
+    container_name: c3proxy-caddy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./Caddyfile.bootstrap:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  router:
+    build: ./router
+    image: caddyclub3090-router
+    container_name: c3proxy-router
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - caddy
+    # uid budi : gid docker — writes to state/ stay owned by the host user
+    # while the docker socket stays readable.
+    user: "1000:999"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /home/budi/caddy:/home/budi/caddy
+    command: ["/home/budi/caddy/scripts/watch.sh"]
+
+volumes:
+  caddy_data:
+  caddy_config:

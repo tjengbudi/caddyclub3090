@@ -1,0 +1,5 @@
+# The key lives here — never commit it.
+.env
+
+# Runtime state: which backend is pinned, last applied config.
+state/
