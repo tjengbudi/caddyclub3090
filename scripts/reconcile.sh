@@ -14,6 +14,7 @@ ALIAS="club3090"
 ADMIN="127.0.0.1:2019"
 STATE="${ROOT}/state"
 PINNED="${STATE}/pinned"
+PREFERRED="${STATE}/preferred"
 APPLIED="${STATE}/Caddyfile.applied"
 RETRY_LOCK="${STATE}/.retry.lock"
 
@@ -34,26 +35,24 @@ fi
 # --- discovery ---------------------------------------------------------------
 mapfile -t ROWS < <(discover)
 
-ACTIVE_NAME=""; ACTIVE_PORT=""; ACTIVE_MODEL=""
+PREF=$(read_state "$PREFERRED")
+PIN=$(read_state "$PINNED")
+
+ACTIVE_NAME=""; ACTIVE_PORT=""; ACTIVE_MODEL=""; VIA=""
 AMBIGUOUS=0
 
-if [[ ${#ROWS[@]} -eq 1 ]]; then
-	IFS=$'\t' read -r ACTIVE_NAME ACTIVE_PORT ACTIVE_MODEL _ <<<"${ROWS[0]}"
-	printf '%s\n' "$ACTIVE_NAME" >"$PINNED"
+# The standing preference wins whenever its engine is up, then the last
+# explicit pick, then a lone backend. See select_active in lib-discover.sh.
+SEL=$(printf '%s\n' "${ROWS[@]:-}" | select_active "$PREF" "$PIN")
+if [[ -n "$SEL" ]]; then
+	IFS=$'\t' read -r VIA ACTIVE_NAME ACTIVE_PORT ACTIVE_MODEL _ <<<"$SEL"
+	# Only the self-election is recorded; a preference must not become a pin, or
+	# it would keep deciding after the user cleared it.
+	[[ "$VIA" == sole ]] && printf '%s\n' "$ACTIVE_NAME" >"$PINNED"
 elif [[ ${#ROWS[@]} -gt 1 ]]; then
-	pin=""
-	[[ -f "$PINNED" ]] && pin=$(<"$PINNED")
-	pin="${pin//$'\n'/}"
-	for row in "${ROWS[@]}"; do
-		IFS=$'\t' read -r n p m _ <<<"$row"
-		if [[ -n "$pin" && "$n" == "$pin" ]]; then
-			ACTIVE_NAME="$n"; ACTIVE_PORT="$p"; ACTIVE_MODEL="$m"
-			break
-		fi
-	done
-	# Several backends up and no valid pin: refuse to guess. /b/<key>/ routes
-	# stay live so nothing is unreachable, but :80 asks for a decision.
-	[[ -z "$ACTIVE_NAME" ]] && AMBIGUOUS=1
+	# Several backends up and nothing selects one: refuse to guess. /b/<key>/
+	# routes stay live so nothing is unreachable, but :80 asks for a decision.
+	AMBIGUOUS=1
 fi
 
 # --- config signature --------------------------------------------------------
@@ -63,7 +62,7 @@ fi
 # That is what makes a bare `docker restart c3proxy-caddy` self-heal: the
 # restarted Caddy is back on the bootstrap config, the signature is missing,
 # and the next reconcile pushes for real instead of trusting a local cache.
-sig_input="key=${PROXY_KEY}|active=${ACTIVE_NAME}:${ACTIVE_PORT}:${ACTIVE_MODEL}|amb=${AMBIGUOUS}"
+sig_input="key=${PROXY_KEY}|active=${ACTIVE_NAME}:${ACTIVE_PORT}:${ACTIVE_MODEL}|via=${VIA}|pref=${PREF}|amb=${AMBIGUOUS}"
 for row in "${ROWS[@]:-}"; do sig_input+="|cand=${row}"; done
 SIG=$(printf '%s' "$sig_input" | sha256sum | cut -c1-16)
 
@@ -82,6 +81,10 @@ status_json() {
 	if [[ -n "$PROXY_KEY" ]]; then out+='true'; else out+='false'; fi
 	out+=',"ambiguous":'
 	if [[ $AMBIGUOUS -eq 1 ]]; then out+='true'; else out+='false'; fi
+	out+=',"preferred":'
+	if [[ -n "$PREF" ]]; then out+=$(jstr "$PREF"); else out+='null'; fi
+	out+=',"selected_by":'
+	if [[ -n "$VIA" ]]; then out+=$(jstr "$VIA"); else out+='null'; fi
 	if [[ -n "$ACTIVE_NAME" ]]; then
 		out+=',"active":{"container":'$(jstr "$ACTIVE_NAME")',"port":'"$ACTIVE_PORT"',"model":'$(jstr "$ACTIVE_MODEL")'}'
 	else
@@ -181,7 +184,7 @@ gen_caddyfile() {
 		cat <<-EOF
 			handle {
 				header Content-Type application/json
-				respond \`{"error":{"message":"several club-3090 backends are running and none is pinned — run 'llmroute' to choose one. Candidates: ${list%; }","type":"service_unavailable","code":503}}\` 503
+				respond \`{"error":{"message":"several club-3090 backends are running and none is preferred or pinned — run 'llmroute' to choose one, or 'llmroute prefer <name>' to make it stick. Candidates: ${list%; }","type":"service_unavailable","code":503}}\` 503
 			}
 		}
 		EOF
@@ -214,9 +217,9 @@ else
 		-H 'Content-Type: text/caddyfile' --data-binary @- >/dev/null; then
 		printf '%s' "$NEW" >"$APPLIED"
 		if [[ -n "$ACTIVE_NAME" ]]; then
-			log ":80 => :${ACTIVE_PORT} ${ACTIVE_NAME} (${ACTIVE_MODEL})"
+			log ":80 => :${ACTIVE_PORT} ${ACTIVE_NAME} (${ACTIVE_MODEL}) [${VIA}]"
 		elif [[ $AMBIGUOUS -eq 1 ]]; then
-			log "${#ROWS[@]} backends running, none pinned — run llmroute"
+			log "${#ROWS[@]} backends running, none preferred or pinned — run llmroute"
 		else
 			log "no backend running"
 		fi

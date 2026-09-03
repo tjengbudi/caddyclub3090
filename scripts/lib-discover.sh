@@ -76,3 +76,48 @@ discover() {
 endpoint_ready() {
 	curl -s -o /dev/null --max-time 2 "http://127.0.0.1:${1}/v1/models" 2>/dev/null
 }
+
+# select_active <preferred> <pinned> — rows of discover() on stdin.
+#
+# Prints "<via>\t<name>\t<port>\t<model>\t<uptime>" for the backend that should
+# own :80, or nothing (exit 1) when the choice is not obvious. `via` is:
+#
+#   preferred  a standing preference matched a running backend
+#   pinned     the last explicit pick is still running
+#   sole       only one backend is up, so it elects itself
+#
+# The preference is checked first and deliberately never written to state/pinned:
+# it has to survive periods where the preferred engine is down and another one
+# auto-pins itself.
+select_active() {
+	local pref="$1" pin="$2" row n p m u via key
+	local -a rows=()
+	while IFS= read -r row; do [[ -n "$row" ]] && rows+=("$row"); done
+
+	[[ ${#rows[@]} -eq 0 ]] && return 1
+
+	for via in preferred pinned; do
+		if [[ "$via" == preferred ]]; then key="$pref"; else key="$pin"; fi
+		[[ -z "$key" ]] && continue
+		for row in "${rows[@]}"; do
+			IFS=$'\t' read -r n p m u <<<"$row"
+			if [[ "$key" == "$n" || "$key" == "$p" ]]; then
+				printf '%s\t%s\n' "$via" "$row"
+				return 0
+			fi
+		done
+	done
+
+	if [[ ${#rows[@]} -eq 1 ]]; then
+		printf 'sole\t%s\n' "${rows[0]}"
+		return 0
+	fi
+	return 1
+}
+
+# read_state <file> — contents of a one-line state file, newlines stripped.
+read_state() {
+	local v=""
+	[[ -f "$1" ]] && v=$(<"$1")
+	printf '%s' "${v//$'\n'/}"
+}

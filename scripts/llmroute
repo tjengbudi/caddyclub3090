@@ -4,6 +4,9 @@
 #   llmroute                  route the only backend, or offer a menu
 #   llmroute 8020             pin by port
 #   llmroute vllm-...-dual    pin by container name
+#   llmroute prefer <key>     always route this one whenever it is running
+#   llmroute prefer show      print the standing preference
+#   llmroute prefer clear     drop the preference
 #   llmroute status           show what is routed where
 #   llmroute key generate     create and install a random key
 #   llmroute key set <key>    install a specific key
@@ -16,6 +19,7 @@ source "${ROOT}/scripts/lib-discover.sh"
 
 ENVFILE="${ROOT}/.env"
 PINNED="${ROOT}/state/pinned"
+PREFERRED="${ROOT}/state/preferred"
 RECONCILE="${ROOT}/scripts/reconcile.sh"
 
 mkdir -p "${ROOT}/state"
@@ -44,9 +48,10 @@ write_key() {
 apply() { bash "$RECONCILE"; }
 
 show_status() {
-	local key rows active
+	local key rows pref pin sel via active=""
 	key=$(current_key)
-	[[ -f "$PINNED" ]] && active=$(<"$PINNED") || active=""
+	pref=$(read_state "$PREFERRED")
+	pin=$(read_state "$PINNED")
 	mapfile -t rows < <(discover)
 
 	if [[ -n "$key" ]]; then
@@ -55,21 +60,35 @@ show_status() {
 		echo "key      : none — :80 is open to anyone who can reach it"
 	fi
 
+	if [[ -n "$pref" ]]; then
+		echo "prefer   : ${pref} — routed to :80 whenever it is running"
+	else
+		echo "prefer   : none — :80 follows the last pick, or the only engine up"
+	fi
+
 	if [[ ${#rows[@]} -eq 0 ]]; then
 		echo "backends : none running"
 		return
 	fi
+
+	# Same order the daemon uses, so what is printed is what is served.
+	sel=$(printf '%s\n' "${rows[@]}" | select_active "$pref" "$pin")
+	[[ -n "$sel" ]] && IFS=$'\t' read -r via active _ <<<"$sel"
 
 	echo "backends :"
 	local n p m u mark
 	for row in "${rows[@]}"; do
 		IFS=$'\t' read -r n p m u <<<"$row"
 		mark="  "
-		[[ "$n" == "$active" ]] && mark="=>"
+		[[ -n "$active" && "$n" == "$active" ]] && mark="=>"
 		printf '  %s %-42s :%-5s %-30s %s\n' "$mark" "$n" "$p" "$m" "$u"
 	done
 	echo
-	echo "  '=>' owns http://localhost/  — the others stay reachable at http://localhost/b/<port>/"
+	if [[ -n "$active" ]]; then
+		echo "  '=>' owns http://localhost/ (via ${via}) — the others stay reachable at http://localhost/b/<port>/"
+	else
+		echo "  nothing owns http://localhost/ — run 'llmroute' to choose; all of them answer at http://localhost/b/<port>/"
+	fi
 }
 
 pin_and_apply() {
@@ -107,6 +126,25 @@ choose() {
 	echo "=> :80 => :${p}  ${n}  (${m})"
 }
 
+set_preferred() {
+	local want="$1" n p m _ found=""
+	while IFS=$'\t' read -r n p m _; do
+		if [[ "$want" == "$n" || "$want" == "$p" ]]; then found="$n"; break; fi
+	done < <(discover)
+
+	if [[ -n "$found" ]]; then
+		printf '%s\n' "$found" >"$PREFERRED"
+		apply
+		echo "preferred: ${found} — it owns :80 whenever it is running"
+	else
+		# Preferring an engine that is currently down is legitimate: the whole
+		# point is that the choice outlives the container.
+		printf '%s\n' "$want" >"$PREFERRED"
+		apply
+		echo "preferred: ${want} (not running right now — it takes :80 as soon as it comes up)"
+	fi
+}
+
 pin_by_key() {
 	local want="$1" n p m _
 	while IFS=$'\t' read -r n p m _; do
@@ -122,7 +160,14 @@ pin_by_key() {
 case "${1:-}" in
 	"") choose ;;
 	status | --status | -s) show_status ;;
-	-h | --help | help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' ;;
+	-h | --help | help) awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0" ;;
+	prefer)
+		case "${2:-}" in
+			"" | show) p=$(read_state "$PREFERRED"); [[ -n "$p" ]] && echo "$p" || echo "(none)" ;;
+			clear | none) rm -f "$PREFERRED"; apply; echo "preference cleared" ;;
+			*) set_preferred "$2" ;;
+		esac
+		;;
 	key)
 		case "${2:-}" in
 			show) k=$(current_key); [[ -n "$k" ]] && echo "$k" || echo "(none — proxy is open)" ;;

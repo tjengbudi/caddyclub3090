@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 
-# Runtime state: which backend is pinned, last applied config.
+# Runtime state: preference, pinned backend, last applied config.
 state/
 
 # Credentials. None of these are produced by this project; they are listed so

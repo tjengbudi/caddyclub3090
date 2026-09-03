@@ -26,10 +26,11 @@ Cek:
 ```bash
 $ llmroute status
 key      : none — :80 is open to anyone who can reach it
+prefer   : none — :80 follows the last pick, or the only engine up
 backends :
   => vllm-qwen38-27b-uncensored-dual-max     :8117  qwen3.8-27b-uncensored-fp8     9 minutes
 
-  '=>' owns http://localhost/  — the others stay reachable at http://localhost/b/<port>/
+  '=>' owns http://localhost/ (via sole) — the others stay reachable at http://localhost/b/<port>/
 ```
 
 Setelah ini tidak ada yang perlu dijalankan lagi. Ganti compose sesuka hati —
@@ -135,6 +136,9 @@ biasa. Jadi sifatnya menambah, bukan mengganti.
 | `llmroute` | rutekan satu-satunya backend, atau tampilkan menu bila ada beberapa |
 | `llmroute 8117` | pilih berdasarkan port |
 | `llmroute vllm-qwen38-27b-uncensored-dual-max` | pilih berdasarkan nama container |
+| `llmroute prefer <port\|nama>` | jadikan backend ini pilihan utama permanen |
+| `llmroute prefer show` | tampilkan preferensi yang berlaku |
+| `llmroute prefer clear` | hapus preferensi |
 | `llmroute status` | apa yang sedang dirutekan ke mana |
 | `llmroute key generate` | pasang key acak |
 | `llmroute key set <key>` | pasang key tertentu |
@@ -148,12 +152,35 @@ dijalankan** — daemon sudah mengurusnya.
 
 ## Kalau ada beberapa engine sekaligus
 
+Urutan penentuan siapa yang memegang `:80`:
+
+1. **preferensi** (`state/preferred`) — menang selama container-nya hidup
+2. **pilihan terakhir** (`state/pinned`) — kalau preferensi tidak dipasang atau engine-nya mati
+3. **satu-satunya engine hidup** — memilih dirinya sendiri, dan tercatat sebagai pilihan terakhir
+
 | Situasi | Yang terjadi |
 |---|---|
 | satu engine hidup | langsung dirutekan, tanpa bertanya |
+| preferensi dipasang dan engine-nya hidup | selalu dia yang dapat `:80` |
 | beberapa, pilihan lama masih hidup | pilihan dipertahankan — `:80` tidak pernah pindah diam-diam |
-| beberapa, belum ada pilihan | `:80` balas 503 berisi daftar kandidat; jalankan `llmroute` |
+| beberapa, belum ada preferensi maupun pilihan | `:80` balas 503 berisi daftar kandidat; jalankan `llmroute` |
 | tidak ada sama sekali | `:80` balas 503 yang menyebutkan itu |
+
+### Pilihan utama yang permanen
+
+`llmroute <nama>` hanya menyetel pilihan terakhir, dan pilihan itu bisa tergeser
+sendiri: kalau engine lain sempat jalan sendirian, dialah yang tercatat. Untuk
+keputusan yang bertahan, pakai preferensi:
+
+```bash
+llmroute prefer vllm-qwen38-27b-uncensored-dual-max
+```
+
+Selama container itu hidup, dia memegang `:80` — tidak peduli apa lagi yang
+menyala atau siapa yang terakhir dipilih. Saat dia mati, routing turun ke
+pilihan terakhir atau ke engine tunggal yang tersisa, lalu kembali ke dia
+begitu dia hidup lagi. `/_status` melaporkannya lewat `preferred` dan
+`selected_by`.
 
 Setiap engine — yang aktif maupun tidak — selalu bisa diakses langsung:
 
@@ -224,6 +251,8 @@ $ curl -s localhost/_status | python3 -m json.tool
         "port": 8117,
         "model": "qwen3.8-27b-uncensored-fp8"
     },
+    "preferred": "vllm-qwen38-27b-uncensored-dual-max",
+    "selected_by": "preferred",
     "candidates": [ … ]
 }
 ```
@@ -238,7 +267,7 @@ dipakai dari rig tanpa key karena ia membaca Docker langsung.
 | Gejala | Kemungkinan | Tindakan |
 |---|---|---|
 | `503 no club-3090 backend is running` | tidak ada engine hidup | `docker ps`; nyalakan compose-nya |
-| `503 several backends … none is pinned` | beberapa engine hidup, belum dipilih | `llmroute` |
+| `503 several backends … none is preferred or pinned` | beberapa engine hidup, belum dipilih | `llmroute`, atau `llmroute prefer <nama>` |
 | `503 club3090 proxy is starting up` | Caddy baru restart, config belum di-push | tunggu ≤60 detik (heartbeat), atau `docker exec c3proxy-router bash /home/budi/caddy/scripts/reconcile.sh` |
 | `401` di semua request | `PROXY_KEY` terpasang | `llmroute key show`, atau `llmroute key clear` |
 | `404 The model 'club3090' does not exist` | request tidak lewat proxy | cek base URL — jangan menunjuk langsung ke `:8117` |
@@ -290,7 +319,7 @@ Hanya `/v1/models` yang pernah di-buffer — streaming SSE lewat begitu saja.
 | `scripts/reconcile.sh` | susun Caddyfile, push ke admin API |
 | `scripts/watch.sh` | ikuti docker events; entrypoint container router |
 | `scripts/llmroute` | CLI pemilih backend dan pengelola key |
-| `state/` | pilihan aktif + config terakhir (gitignored) |
+| `state/` | preferensi, pilihan terakhir, config terakhir (gitignored) |
 | `.env` | `PROXY_KEY` (gitignored) |
 
 Keduanya memakai `network_mode: host` — itu yang membuat Caddy bisa mengikat
