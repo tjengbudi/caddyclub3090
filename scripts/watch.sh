@@ -22,6 +22,19 @@ for _ in $(seq 1 60); do
 done
 
 log "starting"
+
+# reconcile.sh's retry lock dies with the process that held it; one left over
+# from a previous container would block the booting-backend retry for good.
+rmdir "${ROOT}/state/.retry.lock" 2>/dev/null
+
+# Without the docker socket, discovery sees no engines and :80 sits on a 503
+# forever. Say why, instead of looping on a bare "event stream ended".
+if ! docker version >/dev/null 2>&1; then
+	log "ERROR: cannot talk to the docker daemon as $(id -u):$(id -g)" \
+		"(socket group is $(stat -c %g /var/run/docker.sock 2>/dev/null || echo '?'))." \
+		"Set DOCKER_GID in .env to that GID and run 'docker compose up -d'."
+fi
+
 bash "$RECONCILE"
 
 # Heartbeat: docker events cover engines coming and going, but not Caddy
@@ -39,7 +52,7 @@ while true; do
 	docker events \
 		--filter type=container \
 		--filter event=start --filter event=die --filter event=stop \
-		--format '{{.Actor.Attributes.name}}' 2>/dev/null \
+		--format '{{.Actor.Attributes.name}}' \
 	| while read -r name; do
 		[[ "$name" =~ $C3_ENGINE_RE ]] || continue
 		log "event: ${name}"
