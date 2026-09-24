@@ -24,15 +24,13 @@ services:
     network_mode: host
     depends_on:
       - caddy
-    # uid budi : gid docker — writes to state/ stay owned by the host user
-    # while the docker socket stays readable. The docker group's GID is not
-    # fixed: a reinstall of docker-ce recreates the group with a new one, so it
-    # comes from .env (DOCKER_GID, see `getent group docker`).
-    user: "1000:${DOCKER_GID:?set DOCKER_GID in .env to the GID from `getent group docker`}"
+    # Starts as root; router-entry.sh reads the docker socket's GID and drops to
+    # uid budi with that group, so a reinstall of docker-ce that renumbers the
+    # docker group needs no config change.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /home/budi/caddy:/home/budi/caddy
-    command: ["/home/budi/caddy/scripts/watch.sh"]
+    command: ["/home/budi/caddy/scripts/router-entry.sh", "/home/budi/caddy/scripts/watch.sh"]
 
 volumes:
   caddy_data:

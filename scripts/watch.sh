@@ -32,7 +32,7 @@ rmdir "${ROOT}/state/.retry.lock" 2>/dev/null
 if ! docker version >/dev/null 2>&1; then
 	log "ERROR: cannot talk to the docker daemon as $(id -u):$(id -g)" \
 		"(socket group is $(stat -c %g /var/run/docker.sock 2>/dev/null || echo '?'))." \
-		"Set DOCKER_GID in .env to that GID and run 'docker compose up -d'."
+		"Is the socket mounted, and did the container start via router-entry.sh?"
 fi
 
 bash "$RECONCILE"
