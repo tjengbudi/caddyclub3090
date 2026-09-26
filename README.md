@@ -335,9 +335,15 @@ dibaca sebagai acuan. Satu-satunya kopling adalah regex prefix nama engine di
 `scripts/lib-discover.sh`:
 
 ```
-^(vllm-|llamacpp-|llama-cpp-|sglang-|beellama-|ik-llama-)
+^(vllm-|llamacpp-|llama-cpp-|sglang-|beellama-|ik-llama-|flash-next(-|$))
 ```
 
-Itu gabungan dua daftar di repo tersebut — `scripts/club3090-env.sh:46` dan
-`scripts/gpu-mode.sh:1035`. Kalau suatu saat muncul prefix engine baru di sana,
-tambahkan juga di sini. Sisanya diturunkan saat runtime.
+Semua kecuali `flash-next` adalah gabungan dua daftar di repo tersebut —
+`scripts/club3090-env.sh:46` dan `scripts/gpu-mode.sh:1035`. Kalau suatu saat
+muncul prefix engine baru di sana, tambahkan juga di sini. `flash-next` dan
+`flash-next-mtp` berasal dari `~/flash-next`, di luar club-3090, jadi ditambahkan
+manual. Engine lain di luar club-3090 juga perlu ditambahkan manual dengan cara yang sama.
+
+Port diambil dari port yang di-publish container. Engine dengan
+`network_mode: host` (seperti flash-next) tidak mem-publish apa pun, jadi
+port-nya dibaca dari argumen `--port`. Sisanya diturunkan saat runtime.

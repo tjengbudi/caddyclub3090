@@ -14,7 +14,10 @@
 #   scripts/club3090-env.sh:46   and   scripts/gpu-mode.sh:1035
 # This is what separates an engine from the companion services that come up
 # with it (litellm, qdrant, openwebui, searxng, spark-dashboard).
-C3_ENGINE_RE='^(vllm-|llamacpp-|llama-cpp-|sglang-|beellama-|ik-llama-)'
+#
+# flash-next is not a club-3090 engine: it is built and run from ~/flash-next
+# (containers `flash-next` and `flash-next-mtp`), so it is listed here by hand.
+C3_ENGINE_RE='^(vllm-|llamacpp-|llama-cpp-|sglang-|beellama-|ik-llama-|flash-next(-|$))'
 
 # model_from_endpoint <port> — ask the engine what it serves.
 # Picks the longest id, matching club3090-env.sh's "most specific name" rule.
@@ -47,6 +50,15 @@ model_from_args() {
 		| head -1
 }
 
+# port_from_args <container> — read --port off the container command line.
+# Used for host-network engines, which publish nothing for `docker ps` to show.
+port_from_args() {
+	docker inspect --format '{{range .Args}}{{println .}}{{end}}' "$1" 2>/dev/null \
+		| grep -A1 -x -e '--port' \
+		| grep -x '[0-9]\+' \
+		| head -1
+}
+
 # model_from_name <container> — last resort, same rewrites as club3090-env.sh.
 model_from_name() {
 	printf '%s' "$1" \
@@ -54,14 +66,18 @@ model_from_name() {
 		| sed -e 's/qwen36/qwen3.6/g' -e 's/qwen38/qwen3.8/g' -e 's/gemma4/gemma-4/g'
 }
 
-# discover — TSV of every running engine that publishes a host port.
+# discover — TSV of every running engine that publishes a host port, or that
+# runs on the host network with an explicit --port.
 discover() {
 	local line name ports status port model
-	while IFS=$'\t' read -r name ports status; do
+	# Ports goes last: tab is IFS whitespace, so an empty middle field would be
+	# swallowed and shift Status into its place (host-network engines have none).
+	while IFS=$'\t' read -r name status ports; do
 		[[ -z "$name" ]] && continue
 		[[ "$name" =~ $C3_ENGINE_RE ]] || continue
 
 		port=$(printf '%s' "$ports" | sed -n 's/^[^:]*:\([0-9]\+\)->.*/\1/p' | head -1)
+		[[ -z "$port" ]] && port=$(port_from_args "$name")
 		[[ -z "$port" ]] && continue
 
 		model=$(model_from_endpoint "$port")
@@ -69,7 +85,7 @@ discover() {
 		[[ -z "$model" ]] && model=$(model_from_name "$name")
 
 		printf '%s\t%s\t%s\t%s\n' "$name" "$port" "$model" "${status#Up }"
-	done < <(docker ps --filter status=running --format '{{.Names}}\t{{.Ports}}\t{{.Status}}' 2>/dev/null)
+	done < <(docker ps --filter status=running --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null)
 }
 
 # endpoint_ready <port> — does the engine answer yet?
